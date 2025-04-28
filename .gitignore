@@ -1,0 +1,4 @@
+.max/
+.vscode/
+configs/main.yaml
+configs/main.prod.yaml
