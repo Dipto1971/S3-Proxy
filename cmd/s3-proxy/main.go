@@ -24,6 +24,4 @@ func main() {
 			return
 		}
 	}
-
-	panic("subcommand not found")
 }

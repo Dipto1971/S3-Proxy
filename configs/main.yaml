@@ -1,0 +1,24 @@
+listen_addr: ":8080"
+
+crypto:
+  - id: "default"
+    layers:
+      - algorithm: "tink"
+        keyset:
+          data: "eyJwcmltYXJ5S2V5SWQiOjM4MzAwMTcwMjgsImtleSI6W3sia2V5RGF0YSI6eyJ0eXBlVXJsIjoidHlwZS5nb29nbGVhcGlzLmNvbS9nb29nbGUuY3J5cHRvLnRpbmsuQWVzR2NtS2V5IiwidmFsdWUiOiJHaURucWUxM0o0dHcxbGU5ZjJ2OTlvaDFFWk5aUjAxSzBoVUphdGUzTGwrcDlBPT0iLCJrZXlNYXRlcmlhbFR5cGUiOiJTWU1NRVRSSUMifSwic3RhdHVzIjoiRU5BQkxFRCIsImtleUlkIjozODMwMDE3MDI4LCJvdXRwdXRQcmVmaXhUeXBlIjoiVElOSyJ9XX0="
+
+s3_clients:
+  - id: "local"
+    endpoint: "http://localhost:9000"
+    region: "us-east-1"
+    access_key:
+      data: "minioadmin"
+    secret_key:
+      data: "minioadmin"
+
+s3_buckets:
+  - bucket_name: "test-bucket"
+    backends:
+      - s3_client_id: "local"
+        s3_bucket_name: "test-bucket"
+        crypto_id: "default"
