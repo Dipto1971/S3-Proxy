@@ -1,0 +1,358 @@
+Step 1: Set Up the Environment
+Install Go
+The codebase is written in Go, requiring Go version 1.18 or later.
+
+Action: Download and install Go from Go Downloads.
+Verification: Check your Go version by running:go version
+
+Ensure the output indicates Go 1.18 or higher (e.g., go1.18.1).
+
+Organize the Project Directory
+The codebase consists of multiple files organized in a specific structure. Ensure your project directory matches the following:
+s3-proxy/
+├── cmd/
+│ ├── main.go
+│ ├── generate_tink_keyset.go
+│ ├── s3_proxy.go
+│ ├── s3_read.go
+│ ├── s3_write.go
+├── internal/
+│ ├── api/
+│ │ ├── init.go
+│ │ ├── proxy.go
+│ ├── client/
+│ │ ├── s3.go
+│ ├── config/
+│ │ ├── config_backend.go
+│ │ ├── config_crypto.go
+│ │ ├── config.go
+│ │ ├── load.go
+│ │ ├── types.go
+│ ├── crypto/
+│ │ ├── iface.go
+│ │ ├── layers.go
+│ │ ├── tink.go
+├── configs/
+│ ├── main.yaml
+
+Action: Verify that all listed files are present in the correct directories. If any are missing, ensure they are created with the provided code from the codebase.
+Note: The go.mod file is not provided but is assumed to exist with the module name s3-proxy. If it’s missing, initialize it (see below).
+
+Initialize Go Modules
+The codebase uses external packages (e.g., github.com/google/tink/go/aead, github.com/aws/aws-sdk-go-v2). These dependencies are managed via Go modules.
+
+Action:
+If a go.mod file does not exist, create one by running:cd s3-proxy
+go mod init s3-proxy
+
+Fetch all dependencies by running:go mod tidy
+
+Verification: Ensure no errors occur during go mod tidy. This command downloads all required packages and updates go.mod and go.sum.
+
+Install MinIO
+The configuration specifies a MinIO server as the S3 backend, running on http://localhost:9000 with credentials minioadmin:minioadmin.
+
+Action:
+Download MinIO from MinIO Download.
+For Linux, you can use:wget https://dl.min.io/server/minio/release/linux-amd64/minio
+chmod +x minio
+
+Start MinIO with a data directory:./minio server /mnt/data
+
+This starts MinIO on http://localhost:9000 with default credentials (minioadmin:minioadmin).
+
+Verification: Access the MinIO web interface at http://localhost:9000 and log in with minioadmin:minioadmin to confirm the server is running.
+
+Install MinIO Client (Optional)
+The MinIO client (mc) is useful for creating buckets and verifying backend content.
+
+Action:
+Install the MinIO client following instructions at MinIO Client Documentation.
+For Linux, you can use:wget https://dl.min.io/client/mc/release/linux-amd64/mc
+chmod +x mc
+sudo mv mc /usr/local/bin/
+
+Verification: Run mc --version to confirm installation.
+
+Step 2: Configure the Proxy
+Create the Test Bucket
+The configuration specifies a bucket named test-bucket in the MinIO backend.
+
+Action:
+Set up an alias for your MinIO server:mc alias set myminio http://localhost:9000 minioadmin minioadmin
+
+Create the test-bucket:mc mb myminio/test-bucket
+
+Verification: List buckets to confirm:mc ls myminio
+
+You should see test-bucket in the output.
+
+Generate a Tink Keyset
+The proxy uses the Tink library for encryption, requiring a base64-encoded keyset in the configuration.
+
+Action:
+Generate a keyset by running:go run cmd/main.go tink-keyset
+
+This outputs a base64-encoded keyset, e.g.:Base64-encoded JSON keyset:
+<base64_string>
+
+Copy the <base64_string> (excluding the prefix text).
+
+Update Configuration:
+Open configs/main.yaml and replace the empty keyset.data field with the generated keyset. The updated section should look like:crypto:
+
+- id: "default"
+  layers:
+  - algorithm: "tink"
+    keyset:
+    data: "<base64_string>"
+
+Verification:
+Ensure the keyset.data field is no longer empty and contains a valid base64 string.
+
+Review the Configuration
+The default configs/main.yaml is:
+listen_addr: ":8080"
+
+crypto:
+
+- id: "default"
+  layers:
+  - algorithm: "tink"
+    keyset:
+    data: "<base64_string>"
+
+s3_clients:
+
+- id: "local"
+  endpoint: "http://localhost:9000"
+  region: "us-east-1"
+  access_key:
+  data: "minioadmin"
+  secret_key:
+  data: "minioadmin"
+
+s3_buckets:
+
+- bucket_name: "test-bucket"
+  backends:
+  - s3_client_id: "local"
+    s3_bucket_name: "test-bucket"
+    crypto_id: "default"
+
+Action:
+Verify that:
+listen_addr is set to :8080 or your preferred port.
+s3_clients[0].endpoint matches your MinIO server (http://localhost:9000).
+access_key and secret_key match your MinIO credentials (minioadmin:minioadmin).
+s3_buckets[0].bucket_name and backends[0].s3_bucket_name are test-bucket.
+crypto[0].layers[0].keyset.data contains the generated keyset.
+
+Verification:
+Open configs/main.yaml in a text editor and confirm all fields are correctly set.
+
+Step 3: Start the Proxy
+Run the Proxy
+The proxy is started using the s3-proxy subcommand, which loads the configuration and starts an HTTP server.
+
+Action:
+Run the proxy directly:go run cmd/main.go s3-proxy
+
+Alternatively, build an executable first:go build -o s3-proxy cmd/main.go
+./s3-proxy s3-proxy
+
+Expected Output:
+The proxy should start and display:listening on :8080
+
+Verification:
+Check that the proxy is running by accessing the health endpoint:curl http://localhost:8080/healthz
+
+Expected response: ok
+
+Step 4: Test the Proxy
+To verify that the proxy is working correctly, test its core functionalities: writing objects (PUT), reading objects (GET), and ensuring encryption is applied correctly. The provided CLI tools (s3-write and s3-read) are used for these tests. Since authentication is not implemented, dummy credentials can be used when interacting with the proxy.
+Prepare a Test File
+Create a simple text file for testing.
+
+Action:
+Create a file named testfile.txt:echo "Hello, S3 Proxy!" > testfile.txt
+
+Verification:
+Confirm the file exists:cat testfile.txt
+
+Expected output: Hello, S3 Proxy!
+
+Test Writing an Object
+Upload the test file through the proxy to verify that it is encrypted and stored in the backend.
+
+Action:
+Run:go run cmd/main.go s3-write -file-path testfile.txt -key test-key -bucket test-bucket -endpoint http://localhost:8080 -access-key dummy -secret-key dummy -region us-east-1
+
+Notes:
+-file-path testfile.txt: Path to the test file.
+-key test-key: Object key in the bucket.
+-bucket test-bucket: Target bucket.
+-endpoint http://localhost:8080: Proxy endpoint.
+-access-key dummy -secret-key dummy: Dummy credentials (authentication is not enforced).
+
+Expected Output:
+A success message, e.g.:successfully uploaded test-key to bucket test-bucket at 2025-05-01T15:15:00Z
+
+Verification:
+Check MinIO to confirm the object exists:mc ls myminio/test-bucket
+
+Expected output includes test-key.
+
+Test Reading an Object
+Retrieve the object through the proxy to verify that it is decrypted correctly.
+
+Action:
+Run:go run cmd/main.go s3-read -key test-key -bucket test-bucket -endpoint http://localhost:8080 -access-key dummy -secret-key dummy -region us-east-1
+
+Expected Output:
+The original file content:Hello, S3 Proxy!
+
+Verification:
+Confirm the output matches the content of testfile.txt.
+
+Verify Encryption
+Ensure that the object stored in MinIO is encrypted by reading it directly from the backend.
+
+Action:
+Read the object directly from MinIO:go run cmd/main.go s3-read -key test-key -bucket test-bucket -endpoint http://localhost:9000 -access-key minioadmin -secret-key minioadmin -region us-east-1
+
+Expected Output:
+Gibberish or binary data, indicating the object is encrypted (not Hello, S3 Proxy!).
+
+Verification:
+Confirm the output is not the original text, proving that the proxy encrypted the data before storing it.
+
+Test Deletion (Optional)
+Test deleting an object to ensure the proxy handles DELETE requests correctly.
+
+Action:
+Since the provided codebase does not include an s3-delete CLI tool, use curl to send a DELETE request to the proxy:curl -X DELETE http://localhost:8080/test-bucket/test-key
+
+Expected Output:
+HTTP status 200 OK (or 204 No Content if implemented).
+
+Verification:
+Check MinIO to confirm the object is deleted:mc ls myminio/test-bucket
+
+Expected output: No test-key listed.
+
+Test Replication (Optional)
+The configuration currently specifies a single backend, so replication cannot be tested. To test replication, add another backend (e.g., another MinIO instance).
+
+Action:
+Start another MinIO instance on a different port (e.g., http://localhost:9001):MINIO_ROOT_USER=anotheradmin MINIO_ROOT_PASSWORD=anothersecret ./minio server /mnt/data2 --address :9001
+
+Create a bucket in the second MinIO instance:mc alias set myminio2 http://localhost:9001 anotheradmin anothersecret
+mc mb myminio2/test-bucket
+
+Update configs/main.yaml to include the second backend:s3_clients:
+
+- id: "local"
+  endpoint: "http://localhost:9000"
+  region: "us-east-1"
+  access_key:
+  data: "minioadmin"
+  secret_key:
+  data: "minioadmin"
+- id: "remote"
+  endpoint: "http://localhost:9001"
+  region: "us-east-1"
+  access_key:
+  data: "anotheradmin"
+  secret_key:
+  data: "anothersecret"
+
+s3_buckets:
+
+- bucket_name: "test-bucket"
+  backends:
+  - s3_client_id: "local"
+    s3_bucket_name: "test-bucket"
+    crypto_id: "default"
+  - s3_client_id: "remote"
+    s3_bucket_name: "test-bucket"
+    crypto_id: "default"
+
+Restart the proxy:go run cmd/main.go s3-proxy
+
+Upload a file again:go run cmd/main.go s3-write -file-path testfile.txt -key test-key -bucket test-bucket -endpoint http://localhost:8080 -access-key dummy -secret-key dummy -region us-east-1
+
+Verification:
+Check both MinIO instances:mc ls myminio/test-bucket
+mc ls myminio2/test-bucket
+
+Expected output: test-key exists in both buckets.
+
+Step 5: Additional Testing and Considerations
+Test with Large Files
+The current implementation reads entire request bodies into memory, which may cause issues with large files.
+
+Action:
+Create a large file (e.g., 100MB):dd if=/dev/zero of=largefile.bin bs=1M count=100
+
+Upload it:go run cmd/main.go s3-write -file-path largefile.bin -key large-key -bucket test-bucket -endpoint http://localhost:8080 -access-key dummy -secret-key dummy -region us-east-1
+
+Read it back:go run cmd/main.go s3-read -key large-key -bucket test-bucket -endpoint http://localhost:8080 -access-key dummy -secret-key dummy -region us-east-1
+
+Verification:
+Monitor memory usage during the upload/download to ensure the proxy doesn’t crash. Note that performance may be suboptimal due to lack of streaming.
+
+Test Vendor Compatibility
+The proxy is designed to support multiple S3 vendors (e.g., AWS, DigitalOcean). To test with another vendor, configure an additional s3_clients entry with appropriate credentials and endpoint.
+
+Action:
+Example for AWS S3:s3_clients:
+
+- id: "aws"
+  endpoint: "https://s3.amazonaws.com"
+  region: "us-east-1"
+  access_key:
+  data: "<your_aws_access_key>"
+  secret_key:
+  data: "<your_aws_secret_key>"
+
+Update s3_buckets to include the AWS backend and test as above.
+
+Verification:
+Confirm objects are stored in the additional backend.
+
+Limitations and Notes
+
+Authentication: The proxy does not enforce authentication (e.g., AWS Signature Version 4), making it insecure for production use. Dummy credentials work for testing because the proxy uses its own backend credentials.
+Efficiency: Large file handling is inefficient due to in-memory processing. Future improvements should include streaming (e.g., using io.Pipe).
+End-to-End Tests: The codebase lacks automated tests. The provided CLI tools are for manual testing. Consider adding automated tests using the AWS SDK or MinIO client libraries.
+Error Handling: Check logs for errors during testing, as the proxy logs replication failures and other issues.
+
+Troubleshooting
+
+Issue
+Possible Cause
+Solution
+
+Proxy fails to start with keyset error
+Invalid or empty keyset.data in main.yaml
+Regenerate keyset with go run cmd/main.go tink-keyset and update main.yaml.
+
+curl http://localhost:8080/healthz fails
+Proxy not running or wrong port
+Ensure go run cmd/main.go s3-proxy is running and listen_addr is :8080.
+
+Upload fails with connection error
+MinIO not running
+Start MinIO with ./minio server /mnt/data.
+
+Read returns incorrect data
+Encryption/decryption mismatch
+Verify keyset.data matches the generated keyset.
+
+High memory usage during large file upload
+In-memory processing
+Implement streaming (future improvement).
+
+Conclusion
+By following this guide, you can set up, run, and test the S3 proxy codebase to confirm its core functionalities: encryption, basic S3 operations, and replication (if configured). The proxy successfully encrypts data before storing it in the backend and decrypts it on retrieval, but lacks authentication and efficient large file handling. These tests ensure the codebase is operational and provide a foundation for further development, such as adding authentication and streaming support.

@@ -1,3 +1,4 @@
+// go.mod
 module s3-proxy
 
 go 1.23.0
@@ -14,6 +15,7 @@ require (
 )
 
 require (
+	github.com/allaboutapps/aws4 v0.0.0-20200604111205-3c45f7eabfb9 // indirect
 	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.6.10 // indirect
 	github.com/aws/aws-sdk-go-v2/feature/ec2/imds v1.16.30 // indirect
 	github.com/aws/aws-sdk-go-v2/internal/configsources v1.3.34 // indirect
@@ -28,7 +30,8 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.30.1 // indirect
 	github.com/aws/aws-sdk-go-v2/service/sts v1.33.19 // indirect
 	github.com/aws/smithy-go v1.22.2 // indirect
+	github.com/tink-crypto/tink-go/v2 v2.4.0 // indirect
 	golang.org/x/crypto v0.36.0 // indirect
 	golang.org/x/sys v0.31.0 // indirect
-	google.golang.org/protobuf v1.27.1 // indirect
+	google.golang.org/protobuf v1.36.5 // indirect
 )
