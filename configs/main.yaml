@@ -7,7 +7,7 @@ crypto:
     layers:
       - algorithm: "tink"
         keyset:
-          data: ""
+          data: "eyJwcmltYXJ5S2V5SWQiOjQ1NzY1NTYzMywgImtleSI6W3sia2V5RGF0YSI6eyJ0eXBlVXJsIjoidHlwZS5nb29nbGVhcGlzLmNvbS9nb29nbGUuY3J5cHRvLnRpbmsuQWVzR2NtS2V5IiwgInZhbHVlIjoiR2lBZ0xYQjhpS1hIZDZEWXQzSVdXdTEvaU9LeVUybEZBZXpTc2Y0NVhOeWZaUT09IiwgImtleU1hdGVyaWFsVHlwZSI6IlNZTU1FVFJJQyJ9LCAic3RhdHVzIjoiRU5BQkxFRCIsICJrZXlJZCI6NDU3NjU1NjMzLCAib3V0cHV0UHJlZml4VHlwZSI6IlRJTksifV19"
 
 s3_clients:
   - id: "local"
