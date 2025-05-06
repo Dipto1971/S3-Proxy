@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
-	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
@@ -67,7 +66,8 @@ func NewS3(endpoint, region, accessKey, secretKey string) (*S3, error) {
 				o.EndpointOptions.DisableHTTPS = true
 				o.RequestChecksumCalculation = aws.RequestChecksumCalculationUnset
 				o.ResponseChecksumValidation = aws.ResponseChecksumValidationUnset
-				o.APIOptions = append(o.APIOptions, v4.AddUnsignedPayloadMiddleware, v4.RemoveComputePayloadSHA256Middleware)
+				o.UsePathStyle = true
+
 			}
 		}),
 		Config:   &cfg,

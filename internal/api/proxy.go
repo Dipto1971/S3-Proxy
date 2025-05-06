@@ -61,16 +61,18 @@ type s3ClientWrapper struct { // Wrapper for s3.Client
 	Config aws.Config // Includes Credentials and Region
 }
 
-type Crypto interface { // Placeholder for encryption/decryption
+type Crypto interface { 
 	Encrypt([]byte) ([]byte, error)
 	Decrypt([]byte) ([]byte, error)
 }
 
-func NewProxy(clients []*s3.Client, creds map[string]string) *Proxy {
-	return &Proxy{
-		s3Clients:   clients,
-		credentials: creds,
-		buckets:     make(map[string]*s3Bucket),
+
+func (p *Proxy) handlePut(bucket *s3Bucket, objectKey string, w http.ResponseWriter, r *http.Request) {
+	data, err := io.ReadAll(r.Body)
+
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
 }
 
