@@ -1,4 +1,4 @@
-// internal/crypto/layers.gointernal/crypto/layers.go
+// internal/crypto/layers.go
 package crypto
 
 func NewMultiLayerCrypt(layers ...Crypt) *MultiLayerCrypt {

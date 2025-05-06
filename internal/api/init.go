@@ -6,6 +6,9 @@ import (
 	"s3-proxy/internal/client"
 	"s3-proxy/internal/config"
 	"s3-proxy/internal/crypto"
+	"strings"
+
+	"github.com/google/tink/go/keyset"
 )
 
 type s3Bucket struct {
@@ -25,7 +28,12 @@ func New(cfg *config.Config) (*Proxy, error) {
 		layers := make([]crypto.Crypt, 0, len(cfgCrypto.Layers))
 		for _, cfgLayer := range cfgCrypto.Layers {
 			if cfgLayer.Algorithm == "tink" {
-				layer, err := crypto.NewTinkCrypt(cfgLayer.Keyset.Get())
+				reader := keyset.NewJSONReader(strings.NewReader(cfgLayer.Keyset.Get()))
+				kh, err := keyset.Read(reader, nil)
+				if err != nil {
+					return nil, fmt.Errorf("failed to parse Tink keyset: %w", err)
+				}
+				layer, err := crypto.NewTinkCrypt(kh)
 				if err != nil {
 					return nil, err
 				}

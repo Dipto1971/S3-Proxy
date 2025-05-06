@@ -1,3 +1,5 @@
+# configs/main.yaml
+
 listen_addr: ":8080"
 
 crypto:

@@ -19,8 +19,8 @@ type TinkCrypt struct {
 	decryptor tink.HybridDecrypt
 }
 
-func NewTinkCrypt(keysetStr string) (*TinkCrypt, error) {
-	keysetJSON, err := base64.StdEncoding.DecodeString(keysetStr)
+func NewTinkCrypt(keysetStr *keyset.Handle) (*TinkCrypt, error) {
+	keysetJSON, err := base64.StdEncoding.DecodeString(keysetStr.String())
 	if err != nil {
 		return nil, fmt.Errorf("failed to decode keyset: %v", err)
 	}

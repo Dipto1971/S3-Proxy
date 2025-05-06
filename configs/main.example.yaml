@@ -1,0 +1,30 @@
+# the address the app will listen on
+listen_addr: ":8080"
+
+# the crypto algorithms to use
+crypto:
+  - id: "default"
+    layers:
+      - algorithm: "some-algo" # this string should map to an actual algorithm
+        # I imagine a CryptoAlgorithm interface or something like that
+        # that has an Encrypt and Decrypt functions
+        config: {} # Note: this is a placeholder, replace with actual algorithm and config
+
+# the s3 client backends to use
+s3_clients:
+  - id: "example"
+    endpoint: "https://fra1.digitaloceanspaces.com"
+    region: "fra1"
+    access_key:
+      data: ""
+    secret_key:
+      data: ""
+
+# each bucket the s3-proxy exposes
+s3_buckets:
+  - bucket_name: "my-photos-backup"
+    # the backends the data will be replicated to
+    backends:
+      - s3_client_id: "example"
+        s3_bucket_name: "my-bucket" # bucket name on the given client
+        crypto_id: "default" # the crypto algorithm to use
