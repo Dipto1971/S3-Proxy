@@ -28,29 +28,6 @@ func NewS3(endpoint, region, accessKey, secretKey string) (*S3, error) {
 		opts = append(opts, config.WithCredentialsProvider(creds))
 	}
 
-	// if endpoint != "" {
-	// 	customResolver := aws.EndpointResolverWithOptionsFunc(func(service, region string, options ...interface{}) (aws.Endpoint, error) {
-	// 		if service == s3.ServiceID {
-	// 			return aws.Endpoint{
-	// 				URL:               endpoint,
-	// 				SigningRegion:     region,
-	// 				HostnameImmutable: true,
-	// 			}, nil
-	// 		}
-	// 		return aws.Endpoint{}, &aws.EndpointNotFoundError{}
-	// 	})
-	// 	if strings.HasPrefix(endpoint, "http://") {
-	// 		opts = append(opts,
-	// 			config.WithHTTPClient(&http.Client{
-	// 				Transport: &http.Transport{
-	// 					TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-	// 				},
-	// 			}),
-	// 		)
-	// 	}
-	// 	opts = append(opts, config.WithEndpointResolverWithOptions(customResolver))
-	// }
-
 	cfg, err := config.LoadDefaultConfig(context.TODO(), opts...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load AWS config: %w", err)

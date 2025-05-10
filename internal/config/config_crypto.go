@@ -9,4 +9,5 @@ type ConfigCrypto struct {
 type ConfigCryptoLayer struct {
 	Algorithm string             `yaml:"algorithm"`
 	Keyset    *MultiSourceString `yaml:"keyset"`
+	Params    map[string]string `yaml:"params"` 
 }

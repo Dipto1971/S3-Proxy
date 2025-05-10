@@ -5,16 +5,29 @@ crypto:
     layers:
       - algorithm: "tink"
         keyset:
-          data: "eyJwcmltYXJ5S2V5SWQiOjQyMDgxODQ4MjksICJrZXkiOlt7ImtleURhdGEiOnsidHlwZVVybCI6InR5cGUuZ29vZ2xlYXBpcy5jb20vZ29vZ2xlLmNyeXB0by50aW5rLkFlc0djbUtleSIsICJ2YWx1ZSI6IkdpQit2bTZHRlZ5OW03aGNZQXByZUZzSDFoR2hRamsyNlpaQU9ndlh0RTJVcmc9PSIsICJrZXlNYXRlcmlhbFR5cGUiOiJTWU1NRVRSSUMifSwgInN0YXR1cyI6IkVOQUJMRUQiLCAia2V5SWQiOjQyMDgxODQ4MjksICJvdXRwdXRQcmVmaXhUeXBlIjoiVElOSyJ9XX0="
+          env_var: "TINK_KEYSET"
+  - id: "default-triple"
+    layers:
+      - algorithm: "chacha20poly1305"
+        keyset:
+          env_var: "CHACHA_KEY"
+      - algorithm: "aes"
+        keyset:
+          env_var: "AES_KEY"
+        params:
+          mode: "gcm"
+      - algorithm: "tink"
+        keyset:
+          env_var: "TINK_KEYSET"
 
 s3_clients:
   - id: "local"
     endpoint: "http://localhost:9000"
     region: "us-east-1"
     access_key:
-      data: "minioadmin"
+      env_var: "S3_ACCESS_KEY"
     secret_key:
-      data: "minioadmin"
+      env_var: "S3_SECRET_KEY"
 
 s3_buckets:
   - bucket_name: "test-bucket"
@@ -22,3 +35,9 @@ s3_buckets:
       - s3_client_id: "local"
         s3_bucket_name: "test-bucket"
         crypto_id: "default"
+
+  - bucket_name: "test-bucket1"
+    backends:
+      - s3_client_id: "local"
+        s3_bucket_name: "test-bucket"
+        crypto_id: "default-triple"

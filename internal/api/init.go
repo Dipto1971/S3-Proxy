@@ -24,15 +24,27 @@ func New(cfg *config.Config) (*Proxy, error) {
 	for _, cfgCrypto := range cfg.Crypto {
 		layers := make([]crypto.Crypt, 0, len(cfgCrypto.Layers))
 		for _, cfgLayer := range cfgCrypto.Layers {
-			if cfgLayer.Algorithm == "tink" {
-				layer, err := crypto.NewTinkCrypt(cfgLayer.Keyset.Get())
-				if err != nil {
-					return nil, err
+			var layer crypto.Crypt
+			var err error
+			switch cfgLayer.Algorithm {
+			case "tink":
+				layer, err = crypto.NewTinkCrypt(cfgLayer.Keyset.Get())
+			case "aes":
+				mode := cfgLayer.Params["mode"]
+				if mode != "gcm" {
+					return nil, fmt.Errorf("unsupported AES mode: %s", mode)
 				}
-				layers = append(layers, layer)
-			} else {
+				layer, err = crypto.NewAESCrypt(cfgLayer.Keyset.Get())
+			case "chacha20poly1305":
+				layer, err = crypto.NewChaChaCrypt(cfgLayer.Keyset.Get())
+			default:
 				return nil, fmt.Errorf("unsupported crypto algorithm: %s", cfgLayer.Algorithm)
 			}
+
+			if err != nil {
+				return nil, err
+			}
+			layers = append(layers, layer)
 		}
 
 		cryptos[cfgCrypto.ID] = crypto.NewMultiLayerCrypt(layers...)
