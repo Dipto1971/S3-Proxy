@@ -18,7 +18,7 @@ func main() {
 		"s3-proxy":        cmd.S3Proxy,
 		"s3-write":        cmd.S3Write,
 		"s3-read":         cmd.S3Read,
-		"cription-keyset": cmd.GenerateKeyset,
+		"cryption-keyset": cmd.GenerateKeyset,
 	}
 
 	for indx, arg := range os.Args {
