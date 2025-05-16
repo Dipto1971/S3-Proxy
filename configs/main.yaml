@@ -41,3 +41,9 @@ s3_buckets:
       - s3_client_id: "local"
         s3_bucket_name: "test-bucket"
         crypto_id: "default-triple"
+auth:
+  users:
+    - access_key:
+        env_var: "ALLOWED_ACCESS_KEY1"
+    - access_key:
+        env_var: "ALLOWED_ACCESS_KEY2"
