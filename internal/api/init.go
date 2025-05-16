@@ -89,7 +89,6 @@ func New(cfg *config.Config) (*Proxy, error) {
 		buckets[cfgBucket.BucketName] = bucket
 	}
 
-	// Initialize and log access keys
 	auth := make(map[string]bool)
 	log.Printf("Loading access keys from configuration")
 	for _, user := range cfg.Auth.Users {
@@ -103,8 +102,15 @@ func New(cfg *config.Config) (*Proxy, error) {
 	}
 	log.Printf("Total access keys loaded: %d", len(auth))
 
+	headerFormat := cfg.Auth.HeaderFormat.Get()
+	if headerFormat == "" {
+		log.Printf("Warning: No authorization header format specified, authentication will fail")
+	}
+	log.Printf("Loaded authorization header format: %s", headerFormat)
+
 	return &Proxy{
-		buckets: buckets,
-		auth:    auth,
+		buckets:      buckets,
+		auth:         auth,
+		headerFormat: headerFormat,
 	}, nil
 }

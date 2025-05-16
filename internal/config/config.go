@@ -10,7 +10,8 @@ type Config struct {
 }
 
 type ConfigAuth struct {
-	Users []ConfigUser `yaml:"users"`
+	HeaderFormat MultiSourceString `yaml:"header_format"`
+	Users        []ConfigUser     `yaml:"users"`
 }
 
 type ConfigUser struct {

@@ -42,6 +42,8 @@ s3_buckets:
         s3_bucket_name: "test-bucket"
         crypto_id: "default-triple"
 auth:
+  header_format:
+    env_var: "AUTH_HEADER_FORMAT"
   users:
     - access_key:
         env_var: "ALLOWED_ACCESS_KEY1"

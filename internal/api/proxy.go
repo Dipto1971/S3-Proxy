@@ -15,8 +15,9 @@ import (
 )
 
 type Proxy struct {
-	buckets map[string]*s3Bucket
-	auth    map[string]bool
+	buckets      map[string]*s3Bucket
+	auth         map[string]bool
+	headerFormat string
 }
 
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
