@@ -129,38 +129,54 @@ func (p *Proxy) handleGet(bucket *s3Bucket, objectKey string, w http.ResponseWri
 		return
 	}
 
-	backend := bucket.backends[0]
-	log.Printf("Fetching from backend: %s", backend.targetBucketName)
-	obj, err := backend.s3Client.Client.GetObject(context.Background(), &s3.GetObjectInput{
-		Bucket: &backend.targetBucketName,
-		Key:    &objectKey,
-	})
-	if err != nil {
-		log.Printf("GET failed: error fetching object: %v", err)
-		http.Error(w, err.Error(), http.StatusBadGateway)
-		return
-	}
-	defer obj.Body.Close()
+	var lastError error
+	for _, backend := range bucket.backends {
+		log.Printf("Attempting to fetch from backend: %s, target bucket: %s", backend.s3Client.Endpoint, backend.targetBucketName)
+		obj, err := backend.s3Client.Client.GetObject(context.Background(), &s3.GetObjectInput{
+			Bucket: &backend.targetBucketName,
+			Key:    &objectKey,
+		})
 
-	encData, err := io.ReadAll(obj.Body)
-	if err != nil {
-		log.Printf("GET failed: error reading object body: %v", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	decData := encData
-	if backend.crypto != nil {
-		log.Printf("Decrypting data from backend: %s", backend.targetBucketName)
-		decData, err = backend.crypto.Decrypt(encData)
 		if err != nil {
-			log.Printf("GET failed: decryption error: %v", err)
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
+			log.Printf("GET attempt failed for backend %s: %v", backend.targetBucketName, err)
+			lastError = err // Store the error and try the next backend
+			continue
 		}
+
+		// If successful, process the object and return
+		defer obj.Body.Close()
+		log.Printf("Successfully fetched object from backend: %s", backend.targetBucketName)
+
+		encData, err := io.ReadAll(obj.Body)
+		if err != nil {
+			log.Printf("GET failed: error reading object body from backend %s: %v", backend.targetBucketName, err)
+			lastError = err // Store the error and try the next backend (though this part might need more nuanced handling if read fails mid-stream)
+			continue
+		}
+
+		decData := encData
+		if backend.crypto != nil {
+			log.Printf("Decrypting data from backend: %s", backend.targetBucketName)
+			decData, err = backend.crypto.Decrypt(encData)
+			if err != nil {
+				log.Printf("GET failed: decryption error from backend %s: %v", backend.targetBucketName, err)
+				lastError = err // Store the error and try the next backend
+				continue
+			}
+		}
+		log.Printf("GET operation completed successfully from backend: %s for bucket: %s, key: %s", backend.targetBucketName, bucket.name, objectKey)
+		w.Write(decData)
+		return // Success!
 	}
-	log.Printf("GET operation completed successfully for bucket: %s, key: %s", bucket.name, objectKey)
-	w.Write(decData)
+
+	// If all backends failed
+	log.Printf("GET failed: all backends attempted and failed for bucket: %s, key: %s. Last error: %v", bucket.name, objectKey, lastError)
+	if lastError != nil {
+		http.Error(w, lastError.Error(), http.StatusBadGateway)
+	} else {
+		// This case should ideally not be reached if there were backends, but as a fallback
+		http.Error(w, "Failed to get object from all available backends", http.StatusBadGateway)
+	}
 }
 
 func (p *Proxy) handleDelete(bucket *s3Bucket, objectKey string, w http.ResponseWriter, r *http.Request) {
