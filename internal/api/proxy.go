@@ -1,10 +1,8 @@
-// internal/api/proxy.go
 package api
 
 import (
 	"bytes"
 	"context"
-	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -17,21 +15,29 @@ import (
 )
 
 type Proxy struct {
-	buckets map[string]*s3Bucket
+	buckets      map[string]*s3Bucket
+	auth         map[string]bool
+	headerFormat string
 }
 
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	log.Printf("Received request: %s %s", r.Method, r.RequestURI)
+
 	if r.Method == "GET" && r.URL.Path == "/healthz" {
+		log.Printf("Health check successful")
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("ok"))
 		return
 	}
 
-	fmt.Printf("<%s> %s %s\n", time.Now().Format(time.RFC3339), r.Method, r.RequestURI)
+	if err := AuthenticateRequest(p, r); err != nil {
+		log.Printf("Authentication failed: %v", err)
+		http.Error(w, err.Error(), http.StatusUnauthorized)
+		return
+	}
+	log.Printf("Authentication successful for request: %s %s", r.Method, r.RequestURI)
 
 	strBucket, strKey := "", ""
-
-	// Expected path: /{bucket}/{objectKey}
 	path := strings.TrimPrefix(r.URL.Path, "/")
 	parts := strings.SplitN(path, "/", 2)
 	if len(parts) >= 2 {
@@ -47,10 +53,10 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			p.handlePut(bucket, strKey, w, r)
 			return
 		} else if r.Method == http.MethodGet {
-			p.handleGet(bucket, strKey, w)
+			p.handleGet(bucket, strKey, w, r)
 			return
 		} else if r.Method == http.MethodDelete {
-			p.handleDelete(bucket, strKey, w)
+			p.handleDelete(bucket, strKey, w, r)
 			return
 		}
 	}
@@ -59,9 +65,10 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (p *Proxy) handlePut(bucket *s3Bucket, objectKey string, w http.ResponseWriter, r *http.Request) {
+	log.Printf("Starting PUT operation for bucket: %s, key: %s", bucket.name, objectKey)
 	data, err := io.ReadAll(r.Body)
-
 	if err != nil {
+		log.Printf("PUT failed: error reading request body: %v", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -72,26 +79,31 @@ func (p *Proxy) handlePut(bucket *s3Bucket, objectKey string, w http.ResponseWri
 		wg.Add(1)
 		go func(backend *s3Backend) {
 			defer wg.Done()
-
+			log.Printf("Encrypting data for backend: %s", backend.targetBucketName)
 			encData := data
 			if backend.crypto != nil {
 				encData, err = backend.crypto.Encrypt(data)
 				if err != nil {
+					log.Printf("PUT failed: encryption error for backend %s: %v", backend.targetBucketName, err)
 					errCh <- err
 					return
 				}
 			}
 
 			reader := bytes.NewReader(encData)
+			log.Printf("Uploading to backend: %s, bucket: %s, key: %s", backend.targetBucketName, bucket.name, objectKey)
 			_, err = backend.s3Client.Client.PutObject(context.Background(), &s3.PutObjectInput{
 				Bucket:      &backend.targetBucketName,
 				Key:         &objectKey,
 				Body:        reader,
 				ContentType: s(r.Header.Get("Content-Type")),
 				Metadata:    getMetadataHeaders(r.Header),
-
-				// TODO: more headers
 			})
+			if err != nil {
+				log.Printf("PUT failed: upload error for backend %s: %v", backend.targetBucketName, err)
+			} else {
+				log.Printf("PUT successful for backend: %s", backend.targetBucketName)
+			}
 			errCh <- err
 		}(backend)
 	}
@@ -100,60 +112,91 @@ func (p *Proxy) handlePut(bucket *s3Bucket, objectKey string, w http.ResponseWri
 
 	for e := range errCh {
 		if e != nil {
-			log.Printf("replication error: %v", e)
+			log.Printf("PUT operation failed due to replication error")
 			http.Error(w, e.Error(), http.StatusBadGateway)
 			return
 		}
 	}
+	log.Printf("PUT operation completed successfully for bucket: %s, key: %s", bucket.name, objectKey)
 	w.WriteHeader(http.StatusOK)
 }
 
-func (p *Proxy) handleGet(bucket *s3Bucket, objectKey string, w http.ResponseWriter) {
+func (p *Proxy) handleGet(bucket *s3Bucket, objectKey string, w http.ResponseWriter, r *http.Request) {
+	log.Printf("Starting GET operation for bucket: %s, key: %s", bucket.name, objectKey)
 	if len(bucket.backends) == 0 {
+		log.Printf("GET failed: no backend configured")
 		http.Error(w, "no backend configured", http.StatusInternalServerError)
 		return
 	}
 
-	backend := bucket.backends[0]
+	var lastError error
+	for _, backend := range bucket.backends {
+		log.Printf("Attempting to fetch from backend: %s, target bucket: %s", backend.s3Client.Endpoint, backend.targetBucketName)
+		obj, err := backend.s3Client.Client.GetObject(context.Background(), &s3.GetObjectInput{
+			Bucket: &backend.targetBucketName,
+			Key:    &objectKey,
+		})
 
-	obj, err := backend.s3Client.Client.GetObject(context.Background(), &s3.GetObjectInput{
-		Bucket: &backend.targetBucketName,
-		Key:    &objectKey,
-	})
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadGateway)
-		return
-	}
-	defer obj.Body.Close()
-
-	encData, err := io.ReadAll(obj.Body)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	decData := encData
-	if backend.crypto != nil {
-		decData, err = backend.crypto.Decrypt(encData)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
+			log.Printf("GET attempt failed for backend %s: %v", backend.targetBucketName, err)
+			lastError = err // Store the error and try the next backend
+			continue
 		}
+
+		// If successful, process the object and return
+		defer obj.Body.Close()
+		log.Printf("Successfully fetched object from backend: %s", backend.targetBucketName)
+
+		encData, err := io.ReadAll(obj.Body)
+		if err != nil {
+			log.Printf("GET failed: error reading object body from backend %s: %v", backend.targetBucketName, err)
+			lastError = err // Store the error and try the next backend (though this part might need more nuanced handling if read fails mid-stream)
+			continue
+		}
+
+		decData := encData
+		if backend.crypto != nil {
+			log.Printf("Decrypting data from backend: %s", backend.targetBucketName)
+			decData, err = backend.crypto.Decrypt(encData)
+			if err != nil {
+				log.Printf("GET failed: decryption error from backend %s: %v", backend.targetBucketName, err)
+				lastError = err // Store the error and try the next backend
+				continue
+			}
+		}
+		log.Printf("GET operation completed successfully from backend: %s for bucket: %s, key: %s", backend.targetBucketName, bucket.name, objectKey)
+		w.Write(decData)
+		return // Success!
 	}
-	w.Write(decData)
+
+	// If all backends failed
+	log.Printf("GET failed: all backends attempted and failed for bucket: %s, key: %s. Last error: %v", bucket.name, objectKey, lastError)
+	if lastError != nil {
+		http.Error(w, lastError.Error(), http.StatusBadGateway)
+	} else {
+		// This case should ideally not be reached if there were backends, but as a fallback
+		http.Error(w, "Failed to get object from all available backends", http.StatusBadGateway)
+	}
 }
 
-func (p *Proxy) handleDelete(bucket *s3Bucket, objectKey string, w http.ResponseWriter) {
+func (p *Proxy) handleDelete(bucket *s3Bucket, objectKey string, w http.ResponseWriter, r *http.Request) {
+	log.Printf("Starting DELETE operation for bucket: %s, key: %s", bucket.name, objectKey)
 	var wg sync.WaitGroup
 	errCh := make(chan error, len(bucket.backends))
 	for _, backend := range bucket.backends {
 		wg.Add(1)
 		go func(backend *s3Backend) {
 			defer wg.Done()
+			log.Printf("Deleting from backend: %s", backend.targetBucketName)
 			_, err := backend.s3Client.Client.DeleteObject(context.Background(), &s3.DeleteObjectInput{
 				Bucket: &backend.targetBucketName,
 				Key:    &objectKey,
 			})
+			if err != nil {
+				log.Printf("DELETE failed for backend %s: %v", backend.targetBucketName, err)
+			} else {
+				log.Printf("DELETE successful for backend: %s", backend.targetBucketName)
+			}
 			errCh <- err
 		}(backend)
 	}
@@ -162,18 +205,18 @@ func (p *Proxy) handleDelete(bucket *s3Bucket, objectKey string, w http.Response
 
 	for e := range errCh {
 		if e != nil && strings.Contains(e.Error(), "NoSuchKey") {
-			log.Printf("replication error: %v", e)
+			log.Printf("DELETE operation failed due to replication error: %v", e)
 			http.Error(w, e.Error(), http.StatusBadGateway)
 			return
 		}
 	}
+	log.Printf("DELETE operation completed successfully for bucket: %s, key: %s", bucket.name, objectKey)
 	w.WriteHeader(http.StatusOK)
 }
 
 func (p *Proxy) handleProxy(bucket *s3Bucket, w http.ResponseWriter, r *http.Request) {
+	log.Printf("Starting PROXY operation for request: %s %s", r.Method, r.RequestURI)
 	if bucket == nil {
-		// TODO: handle ?x-id=ListBuckets
-
 		for _, b := range p.buckets {
 			bucket = b
 			break
@@ -181,52 +224,54 @@ func (p *Proxy) handleProxy(bucket *s3Bucket, w http.ResponseWriter, r *http.Req
 	}
 
 	if len(bucket.backends) == 0 {
+		log.Printf("PROXY failed: no backend configured")
 		http.Error(w, "no backend configured", http.StatusInternalServerError)
 		return
 	}
 
 	backend := bucket.backends[0]
+	log.Printf("Proxying to backend: %s", backend.targetBucketName)
 	newReq := p.repackage(r, backend)
 	newReq.URL.Path = strings.ReplaceAll(newReq.URL.Path, bucket.name, backend.targetBucketName)
 
 	creds, err := backend.s3Client.Config.Credentials.Retrieve(context.TODO())
 	if err != nil {
+		log.Printf("PROXY failed: error retrieving credentials: %v", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
 	signer := v4.NewSigner()
-
 	err = signer.SignHTTP(context.Background(), creds, newReq, newReq.Header.Get("X-Amz-Content-Sha256"), "s3", backend.s3Client.Config.Region, time.Now())
 	if err != nil {
+		log.Printf("PROXY failed: error signing request: %v", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
 	resp, err := http.DefaultClient.Do(newReq)
 	if err != nil {
+		log.Printf("PROXY failed: error executing request: %v", err)
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
 	defer resp.Body.Close()
 
-	t, _ := io.ReadAll(resp.Body)
-	fmt.Println(string(t))
-
+	log.Printf("PROXY response received: status %d", resp.StatusCode)
+	body, _ := io.ReadAll(resp.Body)
 	w.Header().Set("Content-Type", resp.Header.Get("Content-Type"))
 	w.WriteHeader(resp.StatusCode)
-	_, err = io.Copy(w, resp.Body)
+	_, err = w.Write(body)
 	if err != nil {
-		fmt.Println("Error copying response body:", err)
+		log.Printf("PROXY failed: error writing response: %v", err)
 		return
 	}
+	log.Printf("PROXY operation completed successfully")
 }
 
 func (p *Proxy) repackage(r *http.Request, backend *s3Backend) *http.Request {
+	log.Printf("Repackaging request for backend: %s", backend.targetBucketName)
 	req := r.Clone(r.Context())
-
-	// HTTP clients are not supposed to set this field, however when we receive a request it is set.
-	// So, we unset it.
 	req.RequestURI = ""
 
 	if strings.HasPrefix(backend.s3Client.Endpoint, "https://") {
@@ -248,11 +293,11 @@ func (p *Proxy) repackage(r *http.Request, backend *s3Backend) *http.Request {
 		"X-Forwarded-Port",
 		"X-Forwarded-For",
 	}
-
 	for _, header := range headersToRemove {
 		req.Header.Del(header)
 	}
 
+	log.Printf("Request repackaged successfully")
 	return req
 }
 
@@ -265,15 +310,12 @@ func s(d string) *string {
 
 func getMetadataHeaders(header http.Header) map[string]string {
 	result := map[string]string{}
-
 	for key := range header {
 		key = strings.ToLower(key)
-
 		if strings.HasPrefix(key, "x-amz-meta-") {
 			name := strings.TrimPrefix(key, "x-amz-meta-")
 			result[name] = strings.Join(header.Values(key), ",")
 		}
 	}
-
 	return result
 }

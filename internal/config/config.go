@@ -2,11 +2,20 @@
 package config
 
 type Config struct {
-	ListenAddr string `yaml:"listen_addr"`
+	ListenAddr string           `yaml:"listen_addr"`
+	Crypto     []ConfigCrypto   `yaml:"crypto"`
+	S3Clients  []ConfigS3Client `yaml:"s3_clients"`
+	S3Buckets  []ConfigS3Bucket `yaml:"s3_buckets"`
+	Auth       ConfigAuth       `yaml:"auth"`
+}
 
-	Crypto    []ConfigCrypto   `yaml:"crypto"`
-	S3Clients []ConfigS3Client `yaml:"s3_clients"`
-	S3Buckets []ConfigS3Bucket `yaml:"s3_buckets"`
+type ConfigAuth struct {
+	HeaderFormat MultiSourceString `yaml:"header_format"`
+	Users        []ConfigUser     `yaml:"users"`
+}
+
+type ConfigUser struct {
+	AccessKey MultiSourceString `yaml:"access_key"`
 }
 
 type ConfigS3Bucket struct {

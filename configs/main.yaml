@@ -30,14 +30,19 @@ s3_clients:
       env_var: "S3_SECRET_KEY"
 
 s3_buckets:
-  - bucket_name: "test-bucket"
-    backends:
-      - s3_client_id: "local"
-        s3_bucket_name: "test-bucket"
-        crypto_id: "default"
-
-  - bucket_name: "test-bucket1"
+  - bucket_name: "test-bucket"  
     backends:
       - s3_client_id: "local"
         s3_bucket_name: "test-bucket"
         crypto_id: "default-triple"
+      - s3_client_id: "local"
+        s3_bucket_name: "test-bucket1"
+        crypto_id: "default-triple"
+auth:
+  header_format:
+    env_var: "AUTH_HEADER_FORMAT"
+  users:
+    - access_key:
+        env_var: "ALLOWED_ACCESS_KEY1"
+    - access_key:
+        env_var: "ALLOWED_ACCESS_KEY2"

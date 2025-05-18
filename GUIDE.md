@@ -32,22 +32,54 @@ Use the following command to start the proxy server:
 go run ./cmd/s3-proxy/main.go s3-proxy --config=configs/main.yaml
 ```
 
----
+### Test Cases of authentication
 
-## Step 4: Test File Upload
+Use PowerShell commands to test the proxy. These are the same as in the previous response, but I’ll repeat them for clarity, along with expected logs.
 
-To test the server, run this curl command:
+1. **Valid PUT Request**
 
-```bash
-curl -X PUT http://localhost:8080/test-bucket1/hello.txt \
-     -H "Content-Type: text/plain" \
-     --data-binary @test/testdata/hello.txt
-```
+   ```powershell
+   Invoke-WebRequest -Method Put -Uri "http://localhost:8080/test-bucket/hello.txt" -Headers @{ "Authorization" = "AWS4-HMAC-SHA256 Credential=AKIAEXAMPLEACCESSKEY1/20250516/us-east-1/s3/aws4_request" } -InFile "D:\MyProjects\s3-proxy\test\testdata\hello.txt" -ContentType "text/plain"
+   ```
 
----
+   **Expected Response**: HTTP 200 OK
 
-## Step 5: Verify
+2. **Invalid Access Key**
 
-Check your MinIO dashboard or S3 client to verify that `hello.txt` has been uploaded to `test-bucket1`.
+   ```powershell
+   Invoke-WebRequest -Method Put -Uri "http://localhost:8080/test-bucket/test-key" -Headers @{ "Authorization" = "AWS4-HMAC-SHA256 Credential=INVALIDKEY/20250516/us-east-1/s3/aws4_request" } -Body "test data"
+   ```
 
----
+   **Expected Response**: HTTP 401 Unauthorized, body: "invalid access key"
+
+3. **Missing Authorization Header**
+
+   ```powershell
+   Invoke-WebRequest -Method Put -Uri "http://localhost:8080/test-bucket/test-key" -Body "test data"
+   ```
+
+   **Expected Response**: HTTP 401 Unauthorized, body: "missing Authorization header"
+
+4. **Health Check**
+
+   ```powershell
+   Invoke-WebRequest -Method Get -Uri "http://localhost:8080/healthz"
+   ```
+
+   **Expected Response**: HTTP 200 OK, body: "ok"
+
+5. **Valid GET Request**
+
+   ```powershell
+   Invoke-WebRequest -Method Get -Uri "http://localhost:8080/test-bucket/test-key" -Headers @{ "Authorization" = "AWS4-HMAC-SHA256 Credential=AKIAEXAMPLEACCESSKEY1/20250516/us-east-1/s3/aws4_request" }
+   ```
+
+   **Expected Response**: HTTP 200 OK, body: decrypted object data
+
+6. **Valid DELETE Request**
+
+   ```powershell
+   Invoke-WebRequest -Method Delete -Uri "http://localhost:8080/test-bucket/test-key" -Headers @{ "Authorization" = "AWS4-HMAC-SHA256 Credential=AKIAEXAMPLEACCESSKEY1/20250516/us-east-1/s3/aws4_request" }
+   ```
+
+   **Expected Response**: HTTP 200 OK

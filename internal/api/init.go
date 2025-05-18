@@ -1,8 +1,8 @@
-// internal/api/init.go
 package api
 
 import (
 	"fmt"
+	"log"
 	"s3-proxy/internal/client"
 	"s3-proxy/internal/config"
 	"s3-proxy/internal/crypto"
@@ -89,7 +89,28 @@ func New(cfg *config.Config) (*Proxy, error) {
 		buckets[cfgBucket.BucketName] = bucket
 	}
 
+	auth := make(map[string]bool)
+	log.Printf("Loading access keys from configuration")
+	for _, user := range cfg.Auth.Users {
+		accessKey := user.AccessKey.Get()
+		if accessKey != "" {
+			log.Printf("Loaded access key: %s", accessKey)
+			auth[accessKey] = true
+		} else {
+			log.Printf("Warning: Empty access key found in configuration")
+		}
+	}
+	log.Printf("Total access keys loaded: %d", len(auth))
+
+	headerFormat := cfg.Auth.HeaderFormat.Get()
+	if headerFormat == "" {
+		log.Printf("Warning: No authorization header format specified, authentication will fail")
+	}
+	log.Printf("Loaded authorization header format: %s", headerFormat)
+
 	return &Proxy{
-		buckets: buckets,
+		buckets:      buckets,
+		auth:         auth,
+		headerFormat: headerFormat,
 	}, nil
 }
