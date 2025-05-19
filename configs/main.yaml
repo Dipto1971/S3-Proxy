@@ -28,9 +28,24 @@ s3_clients:
       env_var: "S3_ACCESS_KEY"
     secret_key:
       env_var: "S3_SECRET_KEY"
+  - id: "digitalocean"
+    endpoint: "https://fra1.digitaloceanspaces.com"
+    region: "fra1"
+    access_key:
+      env_var: "DO_SPACES_ACCESS_KEY"
+    secret_key:
+      env_var: "DO_SPACES_SECRET_KEY"
+  - id: "storj"
+    endpoint: "https://gateway.storjshare.io"
+    region: "us-east-1"
+    access_key:
+      env_var: "STORJ_ACCESS_KEY"
+    secret_key:
+      env_var: "STORJ_SECRET_KEY"
+
 
 s3_buckets:
-  - bucket_name: "test-bucket"  
+  - bucket_name: "test-bucket"
     backends:
       - s3_client_id: "local"
         s3_bucket_name: "test-bucket"
@@ -38,6 +53,13 @@ s3_buckets:
       - s3_client_id: "local"
         s3_bucket_name: "test-bucket1"
         crypto_id: "default-triple"
+      - s3_client_id: "storj"
+        s3_bucket_name: "test-b"
+        crypto_id: "default-triple"
+      - s3_client_id: "digitalocean"
+        s3_bucket_name: "s3-proxy-test-bucket"
+        crypto_id: "default"
+      
 auth:
   header_format:
     env_var: "AUTH_HEADER_FORMAT"
