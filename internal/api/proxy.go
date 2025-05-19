@@ -75,6 +75,7 @@ func (p *Proxy) handlePut(bucket *s3Bucket, objectKey string, w http.ResponseWri
 
 	var wg sync.WaitGroup
 	errCh := make(chan error, len(bucket.backends))
+	successCount := 0
 	for _, backend := range bucket.backends {
 		wg.Add(1)
 		go func(backend *s3Backend) {
@@ -103,6 +104,7 @@ func (p *Proxy) handlePut(bucket *s3Bucket, objectKey string, w http.ResponseWri
 				log.Printf("PUT failed: upload error for backend %s: %v", backend.targetBucketName, err)
 			} else {
 				log.Printf("PUT successful for backend: %s", backend.targetBucketName)
+				successCount++
 			}
 			errCh <- err
 		}(backend)
@@ -110,15 +112,23 @@ func (p *Proxy) handlePut(bucket *s3Bucket, objectKey string, w http.ResponseWri
 	wg.Wait()
 	close(errCh)
 
-	for e := range errCh {
-		if e != nil {
-			log.Printf("PUT operation failed due to replication error")
-			http.Error(w, e.Error(), http.StatusBadGateway)
-			return
+	// Check if any backends succeeded
+	if successCount > 0 {
+		if successCount < len(bucket.backends) {
+			// Some backends succeeded, some failed
+			log.Printf("PUT operation partially successful: %d/%d backends succeeded", successCount, len(bucket.backends))
+			w.WriteHeader(http.StatusPartialContent)
+		} else {
+			// All backends succeeded
+			log.Printf("PUT operation completed successfully for bucket: %s, key: %s", bucket.name, objectKey)
+			w.WriteHeader(http.StatusOK)
 		}
+		return
 	}
-	log.Printf("PUT operation completed successfully for bucket: %s, key: %s", bucket.name, objectKey)
-	w.WriteHeader(http.StatusOK)
+
+	// All backends failed
+	log.Printf("PUT operation failed: all backends failed")
+	http.Error(w, "all backends failed", http.StatusBadGateway)
 }
 
 func (p *Proxy) handleGet(bucket *s3Bucket, objectKey string, w http.ResponseWriter, r *http.Request) {

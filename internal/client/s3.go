@@ -39,12 +39,13 @@ func NewS3(endpoint, region, accessKey, secretKey string) (*S3, error) {
 			o.BaseEndpoint = aws.String(endpoint)
 			o.Region = region
 
-			if strings.HasPrefix(endpoint, "http://") {
-				o.EndpointOptions.DisableHTTPS = true
+			// Disable checksums for HTTP endpoints, Storj, and DigitalOcean
+			if strings.HasPrefix(endpoint, "http://") ||
+				strings.Contains(endpoint, "storjshare.io") ||
+				strings.Contains(endpoint, "digitaloceanspaces.com") {
+				o.EndpointOptions.DisableHTTPS = strings.HasPrefix(endpoint, "http://")
 				o.RequestChecksumCalculation = aws.RequestChecksumCalculationUnset
 				o.ResponseChecksumValidation = aws.ResponseChecksumValidationUnset
-				o.UsePathStyle = true
-
 			}
 		}),
 		Config:   &cfg,
