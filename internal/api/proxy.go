@@ -1,8 +1,10 @@
+// internal/api/proxy.go
 package api
 
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -21,14 +23,13 @@ type Proxy struct {
 }
 
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	log.Printf("Received request: %s %s", r.Method, r.RequestURI)
-
 	if r.Method == "GET" && r.URL.Path == "/healthz" {
-		log.Printf("Health check successful")
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("ok"))
 		return
 	}
+
+	log.Printf("Received request: %s %s", r.Method, r.RequestURI)
 
 	if err := AuthenticateRequest(p, r); err != nil {
 		log.Printf("Authentication failed: %v", err)
@@ -76,6 +77,9 @@ func (p *Proxy) handlePut(bucket *s3Bucket, objectKey string, w http.ResponseWri
 	var wg sync.WaitGroup
 	errCh := make(chan error, len(bucket.backends))
 	successCount := 0
+	var mu sync.Mutex                       // Mutex for thread-safe logging
+	successfulBackends := make([]string, 0) // Track successful backends
+
 	for _, backend := range bucket.backends {
 		wg.Add(1)
 		go func(backend *s3Backend) {
@@ -103,8 +107,11 @@ func (p *Proxy) handlePut(bucket *s3Bucket, objectKey string, w http.ResponseWri
 			if err != nil {
 				log.Printf("PUT failed: upload error for backend %s: %v", backend.targetBucketName, err)
 			} else {
-				log.Printf("PUT successful for backend: %s", backend.targetBucketName)
+				mu.Lock()
 				successCount++
+				successfulBackends = append(successfulBackends, fmt.Sprintf("%s (endpoint: %s)", backend.targetBucketName, backend.s3Client.Endpoint))
+				log.Printf("PUT successful for backend bucket: %s at endpoint: %s", backend.targetBucketName, backend.s3Client.Endpoint)
+				mu.Unlock()
 			}
 			errCh <- err
 		}(backend)
@@ -117,10 +124,12 @@ func (p *Proxy) handlePut(bucket *s3Bucket, objectKey string, w http.ResponseWri
 		if successCount < len(bucket.backends) {
 			// Some backends succeeded, some failed
 			log.Printf("PUT operation partially successful: %d/%d backends succeeded", successCount, len(bucket.backends))
+			log.Printf("Successfully uploaded to the following backends: %s", strings.Join(successfulBackends, ", "))
 			w.WriteHeader(http.StatusPartialContent)
 		} else {
 			// All backends succeeded
 			log.Printf("PUT operation completed successfully for bucket: %s, key: %s", bucket.name, objectKey)
+			log.Printf("Successfully uploaded to all backends: %s", strings.Join(successfulBackends, ", "))
 			w.WriteHeader(http.StatusOK)
 		}
 		return
@@ -139,7 +148,8 @@ func (p *Proxy) handleGet(bucket *s3Bucket, objectKey string, w http.ResponseWri
 		return
 	}
 
-	var lastError error
+	var backendErrors []string
+	var notFoundCount int
 	for _, backend := range bucket.backends {
 		log.Printf("Attempting to fetch from backend: %s, target bucket: %s", backend.s3Client.Endpoint, backend.targetBucketName)
 		obj, err := backend.s3Client.Client.GetObject(context.Background(), &s3.GetObjectInput{
@@ -148,8 +158,14 @@ func (p *Proxy) handleGet(bucket *s3Bucket, objectKey string, w http.ResponseWri
 		})
 
 		if err != nil {
-			log.Printf("GET attempt failed for backend %s: %v", backend.targetBucketName, err)
-			lastError = err // Store the error and try the next backend
+			errorMsg := fmt.Sprintf("backend %s: %v", backend.targetBucketName, err)
+			log.Printf("GET attempt failed: %s", errorMsg)
+			backendErrors = append(backendErrors, errorMsg)
+			// Count as not found if NoSuchKey or NoSuchBucket
+			errStr := strings.ToLower(err.Error())
+			if strings.Contains(errStr, "nosuchkey") || strings.Contains(errStr, "nosuchbucket") {
+				notFoundCount++
+			}
 			continue
 		}
 
@@ -159,8 +175,9 @@ func (p *Proxy) handleGet(bucket *s3Bucket, objectKey string, w http.ResponseWri
 
 		encData, err := io.ReadAll(obj.Body)
 		if err != nil {
-			log.Printf("GET failed: error reading object body from backend %s: %v", backend.targetBucketName, err)
-			lastError = err // Store the error and try the next backend (though this part might need more nuanced handling if read fails mid-stream)
+			errorMsg := fmt.Sprintf("backend %s: error reading object body: %v", backend.targetBucketName, err)
+			log.Printf("GET failed: %s", errorMsg)
+			backendErrors = append(backendErrors, errorMsg)
 			continue
 		}
 
@@ -169,8 +186,9 @@ func (p *Proxy) handleGet(bucket *s3Bucket, objectKey string, w http.ResponseWri
 			log.Printf("Decrypting data from backend: %s", backend.targetBucketName)
 			decData, err = backend.crypto.Decrypt(encData)
 			if err != nil {
-				log.Printf("GET failed: decryption error from backend %s: %v", backend.targetBucketName, err)
-				lastError = err // Store the error and try the next backend
+				errorMsg := fmt.Sprintf("backend %s: decryption error: %v", backend.targetBucketName, err)
+				log.Printf("GET failed: %s", errorMsg)
+				backendErrors = append(backendErrors, errorMsg)
 				continue
 			}
 		}
@@ -180,13 +198,16 @@ func (p *Proxy) handleGet(bucket *s3Bucket, objectKey string, w http.ResponseWri
 	}
 
 	// If all backends failed
-	log.Printf("GET failed: all backends attempted and failed for bucket: %s, key: %s. Last error: %v", bucket.name, objectKey, lastError)
-	if lastError != nil {
-		http.Error(w, lastError.Error(), http.StatusBadGateway)
-	} else {
-		// This case should ideally not be reached if there were backends, but as a fallback
-		http.Error(w, "Failed to get object from all available backends", http.StatusBadGateway)
+	errorSummary := fmt.Sprintf("Failed to get object from all backends. Errors: %s", strings.Join(backendErrors, "; "))
+	log.Printf("GET failed: %s", errorSummary)
+
+	// Return 404 if all backends returned not found errors
+	statusCode := http.StatusBadGateway
+	if notFoundCount == len(bucket.backends) {
+		statusCode = http.StatusNotFound
+		log.Printf("All backends returned not found errors, returning 404")
 	}
+	http.Error(w, errorSummary, statusCode)
 }
 
 func (p *Proxy) handleDelete(bucket *s3Bucket, objectKey string, w http.ResponseWriter, r *http.Request) {

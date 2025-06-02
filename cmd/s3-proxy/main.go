@@ -17,8 +17,10 @@ func main() {
 	subcmds := map[string]func() error{
 		"s3-proxy":        cmd.S3Proxy,
 		"s3-write":        cmd.S3Write,
+		"s3-delete":       cmd.S3Delete,
 		"s3-read":         cmd.S3Read,
 		"cryption-keyset": cmd.GenerateKeyset,
+		"s3-mount":        cmd.S3Mount,
 	}
 
 	for indx, arg := range os.Args {

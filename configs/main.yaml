@@ -43,15 +43,11 @@ s3_clients:
     secret_key:
       env_var: "STORJ_SECRET_KEY"
 
-
 s3_buckets:
   - bucket_name: "test-bucket"
     backends:
       - s3_client_id: "local"
         s3_bucket_name: "test-bucket"
-        crypto_id: "default-triple"
-      - s3_client_id: "local"
-        s3_bucket_name: "test-bucket1"
         crypto_id: "default-triple"
       - s3_client_id: "storj"
         s3_bucket_name: "test-b"
@@ -59,7 +55,7 @@ s3_buckets:
       - s3_client_id: "digitalocean"
         s3_bucket_name: "s3-proxy-test-bucket"
         crypto_id: "default"
-      
+
 auth:
   header_format:
     env_var: "AUTH_HEADER_FORMAT"
