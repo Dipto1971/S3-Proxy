@@ -12,6 +12,7 @@ import (
 	"log"
 	"os"
 	"s3-proxy/internal/client"
+	"s3-proxy/internal/crypto"
 	"strings"
 	"sync"
 	"syscall"
@@ -32,9 +33,13 @@ import (
 //
 // Write operations are supported but note that S3 doesn't support true atomic operations
 // or partial writes, so files are uploaded as complete objects on close/sync.
+//
+// Encryption/decryption is supported through the crypto field. When encryption is enabled,
+// data is encrypted before upload and decrypted after download transparently.
 type S3FS struct {
 	s3Client *client.S3
 	bucket   string
+	crypto   crypto.Crypt // Optional encryption/decryption
 	// Cache for metadata to reduce S3 API calls
 	metadataCache map[string]*cachedMetadata
 	cacheMux      sync.RWMutex
@@ -47,11 +52,13 @@ type cachedMetadata struct {
 	cacheTime    time.Time
 }
 
-// NewS3FS creates a new S3FS instance.
-func NewS3FS(s3Client *client.S3, bucket string) *S3FS {
+// NewS3FS creates a new S3FS instance with optional encryption support.
+// If crypto is nil, data will be stored in plaintext.
+func NewS3FS(s3Client *client.S3, bucket string, crypto crypto.Crypt) *S3FS {
 	return &S3FS{
 		s3Client:      s3Client,
 		bucket:        bucket,
+		crypto:        crypto,
 		metadataCache: make(map[string]*cachedMetadata),
 	}
 }
@@ -112,6 +119,9 @@ func (node *S3Node) Attr(ctx context.Context, a *fuse.Attr) error {
 	}
 
 	a.Mode = 0644 // Read-write file
+	// For encrypted files, we store the encrypted size in S3 but report the decrypted size
+	// Since we can't easily determine the decrypted size without downloading and decrypting,
+	// we'll report the encrypted size for now. This is a limitation we can optimize later.
 	a.Size = uint64(*obj.ContentLength)
 	if obj.LastModified != nil {
 		a.Mtime = *obj.LastModified
@@ -352,6 +362,7 @@ func (node *S3Node) Mkdir(ctx context.Context, req *fuse.MkdirRequest) (fs.Node,
 	}
 
 	// Create an empty object with trailing slash to represent the directory
+	// Note: Directory markers are not encrypted as they're empty
 	_, err := node.fs.s3Client.Client.PutObject(ctx, &s3.PutObjectInput{
 		Bucket: &node.fs.bucket,
 		Key:    &dirKey,
@@ -465,6 +476,7 @@ func (node *S3Node) Rename(ctx context.Context, req *fuse.RenameRequest, newDir 
 	}
 
 	// For S3, rename is implemented as copy + delete
+	// Note: This preserves the encrypted state of the file
 	// First, copy the object
 	_, err := node.fs.s3Client.Client.CopyObject(ctx, &s3.CopyObjectInput{
 		Bucket:     &node.fs.bucket,
@@ -509,6 +521,7 @@ type S3FileHandle struct {
 }
 
 // Read implements fs.HandleReader, reading file contents with range support.
+// For encrypted files, we need to decrypt the entire file first, then slice the requested range.
 func (h *S3FileHandle) Read(ctx context.Context, req *fuse.ReadRequest, resp *fuse.ReadResponse) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -533,14 +546,15 @@ func (h *S3FileHandle) Read(ctx context.Context, req *fuse.ReadRequest, resp *fu
 		return nil
 	}
 
-	// Use Range header for efficient partial reads from S3
+	// For encrypted files, we must read the entire object to decrypt it properly
+	// This is a limitation that could be optimized with streaming encryption in the future
 	input := &s3.GetObjectInput{
 		Bucket: &h.node.fs.bucket,
 		Key:    &h.node.key,
 	}
 
-	// Add range header if we're not reading from the beginning or have a specific size
-	if req.Offset > 0 || req.Size > 0 {
+	// If encryption is disabled, we can use range requests for efficiency
+	if h.node.fs.crypto == nil && (req.Offset > 0 || req.Size > 0) {
 		end := req.Offset + int64(req.Size) - 1
 		rangeHeader := fmt.Sprintf("bytes=%d-%d", req.Offset, end)
 		input.Range = &rangeHeader
@@ -552,15 +566,42 @@ func (h *S3FileHandle) Read(ctx context.Context, req *fuse.ReadRequest, resp *fu
 	}
 	defer obj.Body.Close()
 
-	data := make([]byte, req.Size)
-	n, err := io.ReadFull(obj.Body, data)
-	if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
+	// Read the data from S3
+	data, err := io.ReadAll(obj.Body)
+	if err != nil {
 		log.Printf("Error reading from S3 object %s: %v", h.node.key, err)
 		return mapS3Error(err, h.node.key)
 	}
 
-	resp.Data = data[:n]
-	log.Printf("Read %d bytes from S3 for %s (offset: %d, requested: %d)", n, h.node.key, req.Offset, req.Size)
+	// Decrypt if encryption is enabled
+	if h.node.fs.crypto != nil {
+		data, err = h.node.fs.crypto.Decrypt(data)
+		if err != nil {
+			log.Printf("Error decrypting data for %s: %v", h.node.key, err)
+			return mapCryptoError(err, h.node.key)
+		}
+		log.Printf("Successfully decrypted %d bytes for %s", len(data), h.node.key)
+	}
+
+	// Slice the requested range from the decrypted data
+	start := req.Offset
+	end := req.Offset + int64(req.Size)
+
+	if start >= int64(len(data)) {
+		resp.Data = []byte{}
+		return nil
+	}
+
+	if end > int64(len(data)) {
+		end = int64(len(data))
+	}
+
+	if start < 0 {
+		start = 0
+	}
+
+	resp.Data = data[start:end]
+	log.Printf("Read %d bytes from S3 for %s (offset: %d, requested: %d, decrypted size: %d)", len(resp.Data), h.node.key, req.Offset, req.Size, len(data))
 	return nil
 }
 
@@ -609,6 +650,7 @@ func (h *S3FileHandle) Write(ctx context.Context, req *fuse.WriteRequest, resp *
 }
 
 // Flush implements fs.HandleFlusher, flushing changes to S3.
+// This is where encryption happens before uploading to S3.
 func (h *S3FileHandle) Flush(ctx context.Context, req *fuse.FlushRequest) error {
 	if !h.writable || !h.dirty {
 		return nil
@@ -621,11 +663,24 @@ func (h *S3FileHandle) Flush(ctx context.Context, req *fuse.FlushRequest) error 
 		return nil
 	}
 
-	// Upload the entire buffer to S3
+	dataToUpload := h.data.Bytes()
+
+	// Encrypt the data if encryption is enabled
+	if h.node.fs.crypto != nil {
+		encryptedData, err := h.node.fs.crypto.Encrypt(dataToUpload)
+		if err != nil {
+			log.Printf("Error encrypting data for %s: %v", h.node.key, err)
+			return mapCryptoError(err, h.node.key)
+		}
+		dataToUpload = encryptedData
+		log.Printf("Successfully encrypted %d bytes to %d bytes for %s", h.data.Len(), len(dataToUpload), h.node.key)
+	}
+
+	// Upload the data to S3
 	_, err := h.node.fs.s3Client.Client.PutObject(ctx, &s3.PutObjectInput{
 		Bucket: &h.node.fs.bucket,
 		Key:    &h.node.key,
-		Body:   bytes.NewReader(h.data.Bytes()),
+		Body:   bytes.NewReader(dataToUpload),
 	})
 	if err != nil {
 		return mapS3Error(err, h.node.key)
@@ -634,10 +689,15 @@ func (h *S3FileHandle) Flush(ctx context.Context, req *fuse.FlushRequest) error 
 	h.dirty = false
 
 	// Invalidate cache and update with new metadata
+	// Note: We cache the decrypted size, not the encrypted size
 	h.node.invalidateCache()
 	h.node.cacheMetadata(int64(h.data.Len()), time.Now(), false)
 
-	log.Printf("Flushed %d bytes to S3 for %s", h.data.Len(), h.node.key)
+	if h.node.fs.crypto != nil {
+		log.Printf("Flushed %d bytes (encrypted to %d bytes) to S3 for %s", h.data.Len(), len(dataToUpload), h.node.key)
+	} else {
+		log.Printf("Flushed %d bytes to S3 for %s", h.data.Len(), h.node.key)
+	}
 	return nil
 }
 
@@ -692,6 +752,19 @@ func mapS3Error(err error, resource string) error {
 			return fuse.Errno(syscall.EIO) // Generic I/O error
 		}
 	}
+}
+
+// mapCryptoError maps encryption/decryption errors to appropriate FUSE errors
+func mapCryptoError(err error, resource string) error {
+	if err == nil {
+		return nil
+	}
+
+	log.Printf("Crypto error for resource '%s': %v", resource, err)
+
+	// Most crypto errors should be treated as I/O errors
+	// We could be more specific based on error types in the future
+	return fuse.Errno(syscall.EIO)
 }
 
 // Helper function to compute parent key

@@ -12,6 +12,8 @@ import (
 	"os"
 	"runtime"
 	"s3-proxy/internal/client"
+	"s3-proxy/internal/config"
+	"s3-proxy/internal/crypto"
 	"s3-proxy/internal/fusefs"
 
 	"bazil.org/fuse"
@@ -29,8 +31,9 @@ func S3FSMount() error {
 	bucket := flagSet.String("bucket", "test-bucket", "S3 bucket name")
 	debug := flagSet.Bool("debug", false, "Enable debug logging")
 	readOnly := flagSet.Bool("read-only", false, "Mount in read-only mode")
+	configPath := flagSet.String("config", "configs/main.yaml", "Path to configuration file")
 
-	if err := flagSet.Parse(os.Args[2:]); err != nil {
+	if err := flagSet.Parse(os.Args[1:]); err != nil {
 		return fmt.Errorf("failed to parse flags: %v", err)
 	}
 
@@ -44,6 +47,36 @@ func S3FSMount() error {
 
 	if *accessKey == "" || *secretKey == "" {
 		log.Printf("Warning: No access key or secret key provided. Will use default credentials or environment variables.")
+	}
+
+	// Load configuration for authentication and encryption
+	cfg, err := config.Load(*configPath)
+	if err != nil {
+		log.Printf("Warning: Failed to load config from %s: %v. Proceeding without encryption and authentication.", *configPath, err)
+		cfg = nil
+	}
+
+	// Validate access key if configuration is available and access key is provided
+	var cryptoInstance crypto.Crypt
+	if cfg != nil && *accessKey != "" {
+		if !cfg.Auth.IsValidAccessKey(*accessKey) {
+			return fmt.Errorf("invalid access key: %s", *accessKey)
+		}
+		log.Printf("Access key validated successfully")
+
+		// Get crypto configuration for the bucket
+		cryptoID := config.GetCryptoIDForBucket(cfg, *bucket)
+		if cryptoID != "" {
+			cryptoInstance, err = crypto.NewCryptFromConfig(cfg, cryptoID)
+			if err != nil {
+				return fmt.Errorf("failed to create crypto instance for ID %s: %v", cryptoID, err)
+			}
+			log.Printf("Encryption enabled using crypto ID: %s", cryptoID)
+		} else {
+			log.Printf("No encryption configured for bucket: %s", *bucket)
+		}
+	} else {
+		log.Printf("Proceeding without authentication validation and encryption")
 	}
 
 	// Check if mount point exists and is a directory
@@ -74,8 +107,8 @@ func S3FSMount() error {
 		return fmt.Errorf("cannot create S3 client: %v", err)
 	}
 
-	// Create S3FS instance and validate bucket access
-	s3fs := fusefs.NewS3FS(s3Client, *bucket)
+	// Create S3FS instance with encryption support
+	s3fs := fusefs.NewS3FS(s3Client, *bucket, cryptoInstance)
 
 	ctx := context.Background()
 	if err := s3fs.ValidateBucket(ctx); err != nil {
@@ -97,6 +130,13 @@ func S3FSMount() error {
 	} else {
 		log.Printf("Mounting with read/write support")
 		log.Printf("Note: Write operations upload complete files to S3 on flush/close")
+	}
+
+	// Log encryption status
+	if cryptoInstance != nil {
+		log.Printf("Encryption: ENABLED - Data will be encrypted before upload and decrypted after download")
+	} else {
+		log.Printf("Encryption: DISABLED - Data will be stored in plaintext")
 	}
 
 	c, err := fuse.Mount(*mountPoint, mountOptions...)
