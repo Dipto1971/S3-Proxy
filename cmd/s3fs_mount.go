@@ -18,6 +18,7 @@ import (
 	"bazil.org/fuse/fs"
 )
 
+// S3FSMount mounts an S3 bucket as a FUSE filesystem with read/write support
 func S3FSMount() error {
 	flagSet := flag.NewFlagSet("s3fs-mount", flag.ExitOnError)
 	mountPoint := flagSet.String("mount", "", "Mount point directory")
@@ -27,6 +28,7 @@ func S3FSMount() error {
 	region := flagSet.String("region", "us-east-1", "S3 region")
 	bucket := flagSet.String("bucket", "test-bucket", "S3 bucket name")
 	debug := flagSet.Bool("debug", false, "Enable debug logging")
+	readOnly := flagSet.Bool("read-only", false, "Mount in read-only mode")
 
 	if err := flagSet.Parse(os.Args[2:]); err != nil {
 		return fmt.Errorf("failed to parse flags: %v", err)
@@ -88,6 +90,15 @@ func S3FSMount() error {
 		fuse.Subtype("s3fs"),
 	}
 
+	// Add read-only option if specified
+	if *readOnly {
+		mountOptions = append(mountOptions, fuse.ReadOnly())
+		log.Printf("Mounting in read-only mode")
+	} else {
+		log.Printf("Mounting with read/write support")
+		log.Printf("Note: Write operations upload complete files to S3 on flush/close")
+	}
+
 	c, err := fuse.Mount(*mountPoint, mountOptions...)
 	if err != nil {
 		return fmt.Errorf("cannot mount file system: %v", err)
@@ -118,6 +129,15 @@ func S3FSMount() error {
 	}
 
 	log.Printf("Filesystem is ready. Press Ctrl+C to unmount.")
+
+	// Print feature summary
+	if *readOnly {
+		log.Printf("Features: Read-only access, directory listing, metadata caching")
+	} else {
+		log.Printf("Features: Read/write access, create/delete files/directories, rename operations, metadata caching")
+		log.Printf("Write limitations: No partial file updates (full file uploads), no atomic operations")
+	}
+
 	err = fs.Serve(c, s3fs)
 	if err != nil {
 		return fmt.Errorf("failed to serve file system: %v", err)
