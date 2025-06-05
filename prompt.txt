@@ -1,0 +1,92 @@
+Below is a detailed prompt designed for your code editor's AI to implement the s3-mount command in your S3 proxy codebase, enabling the mounting of S3 buckets as local file systems using Mountpoint for Amazon S3. The prompt is structured to ensure seamless integration with your existing Go codebase, includes robust error handling, and addresses compatibility with your proxy's architecture. It avoids mentioning the <xaiArtifact> tag or related terms, focusing solely on the implementation details.
+
+Prompt for Code Editor AI:
+
+I need you to implement a new command, s3-mount, in my Go-based S3 proxy codebase to allow mounting proxied S3 buckets as local file systems using Mountpoint for Amazon S3. The implementation should integrate with the existing codebase, which includes a proxy server (cmd/s3_proxy.go), S3 operations (cmd/s3_read.go, cmd/s3_write.go, cmd/s3_delete.go), and keyset generation (cmd/generate_tink_keyset.go). Below are the requirements, implementation details, and error handling considerations to ensure the command works correctly with the proxy's endpoint and authentication mechanism.
+
+Requirements
+Command Purpose: Add a new s3-mount subcommand to mount an S3 bucket (e.g., test-bucket) to a local directory using Mountpoint for Amazon S3, accessible via the proxy's endpoint (http://localhost:8080).
+Integration: Register the command in main.go alongside existing subcommands (s3-proxy, s3-write, s3-delete, s3-read, cryption-keyset).
+Arguments: The command should accept:
+-bucket: The S3 bucket name (required).
+-mount-point: The local directory to mount the bucket (required).
+-access-key: The AWS access key, which must match an allowed key in the proxy's configuration (ALLOWED_ACCESS_KEY1 or ALLOWED_ACCESS_KEY2) (required).
+-secret-key: The AWS secret key, required by Mountpoint for signing requests, though not verified by the proxy (required).
+Dependencies: Use the os/exec package to run the mountpoint binary. Check if mountpoint is installed using exec.LookPath.
+Mountpoint Command: Run mountpoint with:
+--endpoint-url http://localhost:8080 to point to the proxy.
+--force-path-style to match the proxy's path-style requests (UsePathStyle = true in internal/client/s3.go).
+s3://<bucket_name> as the source and <mount_point> as the destination.
+AWS credentials passed via environment variables (AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY).
+Execution: Start mountpoint in the background using cmd.Start() and provide instructions for unmounting (e.g., umount <mount_point>).
+Error Handling:
+Validate all required arguments.
+Check if mountpoint is installed; if not, provide a clear error with installation instructions.
+Create the mount point directory if it doesn't exist using os.MkdirAll.
+Handle failures in starting the mountpoint command.
+Log errors using the log package, consistent with the codebase's logging style.
+Security Note: The proxy's authentication (internal/api/auth.go) only verifies the access key against allowed keys without checking the secret key or AWS4 signatures. Ensure the access key is valid for the proxy, but note that any secret key will work for Mountpoint.
+Backend Consideration: The proxy supports multiple backends per bucket (e.g., local, Storj, DigitalOcean). Mountpoint's operations (e.g., GetObject, PutObject, DeleteObject) are handled correctly by handleGet, handlePut, and handleDelete, but ListObjectsV2 (used for directory listings) is forwarded to the first backend only (handleProxy). This may result in incomplete listings if backends are not synchronized, but no code changes are needed for this implementation.
+Implementation Steps
+Create cmd/s3_mount.go:
+Define a S3Mount function that parses flags using the flag package.
+Validate required arguments (bucket, mount-point, access-key, secret-key).
+Check for the mountpoint binary using exec.LookPath.
+Create the mount point directory with os.MkdirAll (permissions: 0755).
+Construct and run the mountpoint command using exec.Command, setting environment variables for AWS credentials.
+Start the command in the background and print success message with unmount instructions.
+Return errors with descriptive messages using fmt.Errorf.
+Update main.go:
+Add s3-mount to the subcmds map, mapping to cmd.S3Mount.
+Ensure error handling in main logs fatal errors using log.Fatalf, consistent with existing behavior.
+Example Usage
+The command should be executable as:
+
+text
+
+Collapse
+
+Wrap
+
+Copy
+./s3-proxy s3-mount -bucket test-bucket -mount-point /mnt/s3bucket -access-key AKIAEXAMPLEACCESSKEY -secret-key mysecretkey
+Expected output:
+
+text
+
+Collapse
+
+Wrap
+
+Copy
+Mounted bucket test-bucket successfully at /mnt/s3bucket. To unmount, run 'umount /mnt/s3bucket'
+Error Handling Cases
+Missing Arguments: Return an error if any required flag is empty (e.g., missing required arguments: bucket, mount-point, access-key, and secret-key are required).
+Mountpoint Not Installed: Return an error with a link to installation instructions (e.g., mountpoint is not installed. Please install Mountpoint for Amazon S3: https://docs.aws.amazon.com/AmazonS3/latest/userguide/mountpoint.html).
+Mount Point Issues: Handle failures in checking or creating the mount point directory (e.g., failed to create mount point directory /mnt/s3bucket: permission denied).
+Mount Failure: Return an error if the mountpoint command fails to start (e.g., failed to mount bucket test-bucket to /mnt/s3bucket: exit status 1).
+Additional Notes
+Endpoint: Hardcode the proxy endpoint as http://localhost:8080 to match listen_addr in configs/main.yaml. Optionally, consider adding a flag to override this or reading from the configuration.
+Path-Style Requests: Include --force-path-style to ensure compatibility with the proxy's path-style configuration.
+Logging: Use fmt.Printf for success messages and fmt.Errorf for errors, aligning with the codebase's style (e.g., cmd/s3_write.go uses log.Printf for success).
+Dependencies: No additional Go packages are needed beyond os, os/exec, flag, and fmt, which are already used in the codebase.
+Future Improvements (not required for this implementation):
+Add an s3-unmount command to run umount.
+Enhance handleProxy in internal/api/proxy.go to aggregate ListObjectsV2 results from all backends for complete directory listings.
+Implement AWS4 signature verification in internal/api/auth.go for production security.
+Codebase Context
+Directory Structure:
+cmd/: Contains subcommands (s3_proxy.go, s3_read.go, s3_write.go, s3_delete.go, generate_tink_keyset.go).
+main.go: Entry point, registers subcommands using a map.
+internal/api/: Proxy logic and authentication.
+internal/client/: S3 client configuration.
+internal/config/: YAML configuration parsing.
+internal/crypto/: Encryption/decryption logic.
+configs/main.yaml: Defines proxy settings, including listen_addr: ":8080".
+Authentication: The proxy checks access keys against ALLOWED_ACCESS_KEY1 or ALLOWED_ACCESS_KEY2 from the environment, set in configs/main.yaml under auth.users.
+Encryption: The proxy applies encryption (Tink, AES, ChaCha20-Poly1305) transparently, which Mountpoint will not affect as it receives plaintext data.
+Deliverables
+Create a new file cmd/s3_mount.go with the S3Mount function.
+Update main.go to register the s3-mount command.
+Ensure all error messages are clear and consistent with the codebase's style.
+Please generate the necessary code changes, ensuring proper error handling and integration with the existing codebase. Provide the full content for cmd/s3_mount.go and the updated main.go, following the structure and conventions of the existing code (e.g., use flag for parsing, fmt.Errorf for errors, and fmt.Printf for success messages). Do not modify other files or add unnecessary dependencies.

@@ -20,8 +20,6 @@ func main() {
 		"s3-delete":       cmd.S3Delete,
 		"s3-read":         cmd.S3Read,
 		"cryption-keyset": cmd.GenerateKeyset,
-		"s3-mount":        cmd.S3Mount,
-		"s3fs-mount":      cmd.S3FSMount,
 	}
 
 	for indx, arg := range os.Args {

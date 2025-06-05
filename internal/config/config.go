@@ -11,17 +11,7 @@ type Config struct {
 
 type ConfigAuth struct {
 	HeaderFormat MultiSourceString `yaml:"header_format"`
-	Users        []ConfigUser      `yaml:"users"`
-}
-
-// IsValidAccessKey checks if the given access key is valid
-func (auth *ConfigAuth) IsValidAccessKey(key string) bool {
-	for _, user := range auth.Users {
-		if user.AccessKey.Get() == key {
-			return true
-		}
-	}
-	return false
+	Users        []ConfigUser     `yaml:"users"`
 }
 
 type ConfigUser struct {
@@ -37,16 +27,4 @@ type ConfigS3BucketBackend struct {
 	S3ClientID   string `yaml:"s3_client_id"`
 	S3BucketName string `yaml:"s3_bucket_name"`
 	CryptoID     string `yaml:"crypto_id"`
-}
-
-// GetCryptoIDForBucket returns the crypto ID for the first backend of the specified bucket
-func GetCryptoIDForBucket(cfg *Config, bucketName string) string {
-	for _, bucket := range cfg.S3Buckets {
-		if bucket.BucketName == bucketName {
-			if len(bucket.Backends) > 0 {
-				return bucket.Backends[0].CryptoID
-			}
-		}
-	}
-	return ""
 }
