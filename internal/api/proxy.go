@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
@@ -29,6 +30,9 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	log.Printf("Received request: %s %s", r.Method, r.RequestURI)
+	log.Printf("Request headers: %v", r.Header)
+	log.Printf("Request host: %s", r.Host)
+	log.Printf("Request URL: %s", r.URL.String())
 
 	if err := AuthenticateRequest(p, r); err != nil {
 		log.Printf("Authentication failed: %v", err)
@@ -45,8 +49,23 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	} else if len(parts) == 1 {
 		strBucket = parts[0]
 	}
+	
+	log.Printf("Path parsing - Original path: '%s', Trimmed path: '%s', Parts: %v", r.URL.Path, path, parts)
+	log.Printf("Parsed - Bucket: '%s', Key: '%s'", strBucket, strKey)
 
 	bucket := p.buckets[strBucket]
+	if bucket != nil {
+		log.Printf("Found bucket configuration for: %s", strBucket)
+	} else {
+		log.Printf("No bucket configuration found for: %s", strBucket)
+		log.Printf("Available buckets: %v", func() []string {
+			buckets := make([]string, 0, len(p.buckets))
+			for k := range p.buckets {
+				buckets = append(buckets, k)
+			}
+			return buckets
+		}())
+	}
 
 	if bucket != nil && strKey != "" {
 		if r.Method == http.MethodPut || r.Method == http.MethodPost {
@@ -54,6 +73,9 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		} else if r.Method == http.MethodGet {
 			p.handleGet(bucket, strKey, w, r)
+			return
+		} else if r.Method == http.MethodHead {
+			p.handleHead(bucket, strKey, w, r)
 			return
 		} else if r.Method == http.MethodDelete {
 			p.handleDelete(bucket, strKey, w, r)
@@ -192,6 +214,11 @@ func (p *Proxy) handleGet(bucket *s3Bucket, objectKey string, w http.ResponseWri
 			}
 		}
 		log.Printf("GET operation completed successfully from backend: %s for bucket: %s, key: %s", backend.targetBucketName, bucket.name, objectKey)
+		
+		// Set proper headers for the response
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(decData)))
+		w.WriteHeader(http.StatusOK)
 		w.Write(decData)
 		return // Success!
 	}
@@ -199,6 +226,100 @@ func (p *Proxy) handleGet(bucket *s3Bucket, objectKey string, w http.ResponseWri
 	// If all backends failed
 	errorSummary := fmt.Sprintf("Failed to get object from all backends. Errors: %s", strings.Join(backendErrors, "; "))
 	log.Printf("GET failed: %s", errorSummary)
+
+	// Return 404 if all backends returned not found errors
+	statusCode := http.StatusBadGateway
+	if notFoundCount == len(bucket.backends) {
+		statusCode = http.StatusNotFound
+		log.Printf("All backends returned not found errors, returning 404")
+	}
+	http.Error(w, errorSummary, statusCode)
+}
+
+func (p *Proxy) handleHead(bucket *s3Bucket, objectKey string, w http.ResponseWriter, r *http.Request) {
+	log.Printf("Starting HEAD operation for bucket: %s, key: %s", bucket.name, objectKey)
+	if len(bucket.backends) == 0 {
+		log.Printf("HEAD failed: no backend configured")
+		http.Error(w, "no backend configured", http.StatusInternalServerError)
+		return
+	}
+
+	var backendErrors []string
+	var notFoundCount int
+	for _, backend := range bucket.backends {
+		log.Printf("Attempting to head from backend: %s, target bucket: %s", backend.s3Client.Endpoint, backend.targetBucketName)
+		obj, err := backend.s3Client.Client.HeadObject(context.Background(), &s3.HeadObjectInput{
+			Bucket: &backend.targetBucketName,
+			Key:    &objectKey,
+		})
+
+		if err != nil {
+			errorMsg := fmt.Sprintf("backend %s: %v", backend.targetBucketName, err)
+			log.Printf("HEAD attempt failed: %s", errorMsg)
+			backendErrors = append(backendErrors, errorMsg)
+			// Count as not found if NoSuchKey or NoSuchBucket
+			errStr := strings.ToLower(err.Error())
+			if strings.Contains(errStr, "nosuchkey") || strings.Contains(errStr, "nosuchbucket") {
+				notFoundCount++
+			}
+			continue
+		}
+
+		// If successful, set headers and return (no body for HEAD)
+		log.Printf("Successfully fetched object metadata from backend: %s", backend.targetBucketName)
+		
+		// For HEAD requests, we need to return the decrypted content length
+		// Since we can't decrypt without downloading, we'll estimate or get the original size
+		contentLength := obj.ContentLength
+		if contentLength != nil {
+			// If the object is encrypted, we need to get actual decrypted size
+			// For now, we'll use a simple approach: get the object to determine real size
+			getObj, getErr := backend.s3Client.Client.GetObject(context.Background(), &s3.GetObjectInput{
+				Bucket: &backend.targetBucketName,
+				Key:    &objectKey,
+			})
+			if getErr == nil {
+				encData, readErr := io.ReadAll(getObj.Body)
+				getObj.Body.Close()
+				if readErr == nil {
+					decData := encData
+					if backend.crypto != nil {
+						decData, err = backend.crypto.Decrypt(encData)
+						if err == nil {
+							contentLength = aws.Int64(int64(len(decData)))
+						}
+					}
+				}
+			}
+		}
+
+		// Set response headers
+		if obj.ContentType != nil {
+			w.Header().Set("Content-Type", *obj.ContentType)
+		} else {
+			w.Header().Set("Content-Type", "application/octet-stream")
+		}
+		
+		if contentLength != nil {
+			w.Header().Set("Content-Length", fmt.Sprintf("%d", *contentLength))
+		}
+		
+		if obj.LastModified != nil {
+			w.Header().Set("Last-Modified", obj.LastModified.Format(http.TimeFormat))
+		}
+		
+		if obj.ETag != nil {
+			w.Header().Set("ETag", *obj.ETag)
+		}
+
+		log.Printf("HEAD operation completed successfully from backend: %s for bucket: %s, key: %s", backend.targetBucketName, bucket.name, objectKey)
+		w.WriteHeader(http.StatusOK)
+		return // Success!
+	}
+
+	// If all backends failed
+	errorSummary := fmt.Sprintf("Failed to head object from all backends. Errors: %s", strings.Join(backendErrors, "; "))
+	log.Printf("HEAD failed: %s", errorSummary)
 
 	// Return 404 if all backends returned not found errors
 	statusCode := http.StatusBadGateway
